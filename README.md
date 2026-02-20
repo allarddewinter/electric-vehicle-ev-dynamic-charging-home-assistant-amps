@@ -73,4 +73,4 @@ Existing v2.1 configurations are incompatible. You must re-configure the bluepri
 
 ## Community Discussion
 
-https://community.home-assistant.io/t/dynamic-ev-charging-automation
+https://community.home-assistant.io/t/tesla-dynamic-charging-ford-mercedes-any-ev-automation/
