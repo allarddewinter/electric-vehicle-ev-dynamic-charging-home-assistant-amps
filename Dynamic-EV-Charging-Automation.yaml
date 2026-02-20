@@ -1,0 +1,446 @@
+blueprint:
+  name: Dynamic EV Charging Automation v3.0
+  description: >
+    **v3.0 - Major Architecture Update: Per-Phase Current Monitoring**
+
+    This version represents a fundamental architecture change from watts-based to 
+    amps-based per-phase monitoring, bringing significant improvements in accuracy 
+    and safety for 3-phase electrical systems.
+
+    **What's New in v3.0:**
+    - **Per-phase monitoring**: Calculates available capacity per phase using the 
+      bottleneck principle - charging limited by the most constrained phase
+    - **Native amperage sensors**: Uses A directly from P1 meters for maximum accuracy
+    - **1-phase and 3-phase support**: Configurable for any mains connection type
+    - **Grid congestion management**: Optional weekday peak-hour capacity limiting
+    - **Optional location tracking**: Device tracker now optional for flexible setups
+    - **Robust status detection**: Expanded case-insensitive charging status support
+
+    **Safety Features:**
+    - Configurable safety margin (default 10%) to prevent breaker trips
+    - Gradual 1A adjustment steps with 5-second delays
+    - Automatic stop when capacity drops below minimum
+    - Hardware-safe ramp-down using charger's minimum amperage
+
+    **Designed for:** HomeWizard P1 meters + Tuya-based EV chargers (also compatible 
+    with other setups using similar sensor entities).
+
+    **Community Discussion:** https://community.home-assistant.io/t/dynamic-ev-charging-automation
+
+    **Safety Margin Explained:** This creates a buffer below your grid limit. If set 
+    to 10% on a 25A connection, the automation targets 22.5A maximum per phase. This 
+    prevents the breaker from tripping if an appliance turns on between adjustments.
+  domain: automation
+  input:
+    interval:
+      name: Adjustment Interval (minutes)
+      description: >
+        Interval in minutes to adjust the charging amperage dynamically.
+
+        The automation will check the total household power consumption at this interval 
+        and adjust the EV charging current accordingly. A shorter interval (e.g., 1 minute) 
+        allows faster reactions to power fluctuations, while a longer interval (e.g., 5 minutes) 
+        reduces the number of adjustments but may respond more slowly to changes in home energy use.
+
+        Choose the interval based on how frequently you want the system to update the charging 
+        current in response to changes in household power consumption.
+      default: /1
+      selector:
+        select:
+          options:
+            - label: "1 minute"
+              value: /1
+            - label: "3 minutes"
+              value: /3
+            - label: "5 minutes"
+              value: /5
+    mains_type:
+      name: Mains Connection Type
+      description: >
+        Your electrical mains connection type.
+
+        **1-phase (Single):** Only L1 sensors are monitored. L2 and L3 are ignored. 
+        Use this if your home has a single-phase electrical supply.
+
+        **3-phase (Standard):** All three phases (L1, L2, L3) are monitored using the 
+        bottleneck principle - charging is limited by the phase with the least available capacity.
+
+        This setting affects how the automation calculates available charging capacity.
+      default: 3-phase
+      selector:
+        select:
+          options:
+            - label: "1-phase (Single)"
+              value: 1-phase
+            - label: "3-phase (Standard)"
+              value: 3-phase
+    sensor_charging_status:
+      name: EV Charger Status Sensor
+      description: >
+        Sensor that detects whether the electric vehicle (EV) is currently charging.
+
+        The automation will only adjust the charging amperage if this sensor indicates 
+        that the EV is actively charging, charged, or plugged in.
+
+        If the vehicle is at home but not plugged in or has already completed charging, 
+        no changes will be made to the charging current.
+
+        Supported status values: charging, charged, plugged_in (case-insensitive).
+      default: sensor.ev_charger_status
+      selector:
+        entity:
+          domain: sensor
+    charger_toggle:
+      name: EV Charging Toggle (Start/Stop)
+      description: >
+        Select entity that controls the charging state of the EV charger.
+
+        This entity should support options like "Start charging", "Stop charging", or similar commands.
+
+        When the calculated amperage falls below the minimum threshold, the automation will use 
+        this entity to stop charging instead of setting amperage to 0.
+
+        When power becomes available again, it will restart charging and set the appropriate amperage.
+      default: select.ev_charger_toggle_charging
+      selector:
+        entity:
+          domain: select
+    charging_current_control:
+      name: Set Charge Current (Number Entity)
+      description: >
+        Entity that controls the charging amperage of the electric vehicle (EV).
+
+        This must be a `number` entity that allows adjusting the charging current dynamically. 
+        The automation will modify this value based on the available power in the household, 
+        ensuring efficient energy use and preventing overloads.
+
+        Changes are made in 1A steps with 5-second delays to prevent charger errors.
+      default: number.ev_charger_set_charge_current
+      selector:
+        entity:
+          domain: number
+    max_grid_amps:
+      name: Grid Limit per Phase (Amps)
+      description: >
+        Your main breaker capacity per phase in amperes.
+
+        This is the maximum current your electrical system can draw per phase before 
+        the main breaker trips. Common values: 25A (standard EU home), 32A, 40A, 63A.
+
+        **Important:** This should be set to your actual breaker rating, not your contracted 
+        limit. The safety margin (below) creates the operational buffer.
+
+        Example: On a 25A connection with 10% safety margin, the automation targets 22.5A maximum.
+      default: 25
+      selector:
+        number:
+          min: 1
+          max: 80
+          unit_of_measurement: A
+    safety_margin:
+      name: Safety Margin (%)
+      description: >
+        Buffer percentage to maintain below your grid limit.
+
+        This creates a safety buffer to prevent tripping your main breaker. The automation 
+        targets (grid_limit × (1 - margin/100)) as the maximum per-phase current.
+
+        **Example:** With a 25A grid limit and 10% safety margin:
+        - Target maximum: 25 × 0.9 = 22.5A per phase
+        - This leaves 2.5A buffer for sudden load increases between adjustment cycles
+
+        **Recommended values:** 5-15%. Higher values are safer but reduce charging capacity.
+        Lower values maximize charging but increase trip risk if large appliances turn on.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 20
+          unit_of_measurement: '%'
+    max_charger_amps:
+      name: Max Charger Amps
+      description: >
+        Maximum charging amperage the EV charger should use.
+
+        The automation will never set the charging amperage above this limit, even if 
+        there is plenty of available power in the household.
+
+        **Guidelines:**
+        - Set according to your charger's maximum rating (typically 16A or 32A)
+        - Can be set lower to reserve capacity for other loads
+        - Should not exceed your grid limit per phase - if set higher, the grid limit 
+          will naturally constrain charging through the headroom calculation
+
+        Example: With an 18A setting, the charger will never draw more than 18A even 
+        if 25A is available.
+      default: 18
+      selector:
+        number:
+          min: 6
+          max: 32
+          unit_of_measurement: A
+    min_charge_amps:
+      name: Min Charger Amps
+      description: >
+        Minimum charging amperage the EV charger should use.
+
+        If the calculated charging amperage falls below this value due to limited available 
+        power, the automation will stop charging until more power is available.
+
+        **Guidelines:**
+        - Most EV chargers have a hardware minimum of 6A
+        - Setting this too low may cause inefficient charging or charger errors
+        - This value is also used as the floor during ramp-down to ensure valid hardware commands
+
+        Example: With a 6A minimum, charging stops when available power drops below 6A 
+        and resumes when it rises above 6A.
+      default: 6
+      selector:
+        number:
+          min: 0
+          max: 32
+          unit_of_measurement: A
+    peak_filter_enabled:
+      name: Enable Peak Hour Filter
+      description: >
+        Enable grid congestion management during peak hours.
+
+        When enabled, the automation limits charging capacity during configured peak hours 
+        on weekdays. This is useful if your grid operator imposes capacity restrictions 
+        during high-demand periods, or if you want to reduce strain on the local grid 
+        during evening peak usage.
+
+        The peak filter only applies on weekdays (Monday-Friday).
+      default: true
+      selector:
+        boolean: {}
+    peak_start_time:
+      name: Peak Period Start
+      description: >
+        Start time for the peak hour filter.
+
+        During this period on weekdays, charging is limited to the Peak Max Charger Amps value.
+        Typical grid congestion periods are evening hours (e.g., 17:00-21:00) when residential 
+        demand is highest.
+      default: "17:00:00"
+      selector:
+        time: {}
+    peak_end_time:
+      name: Peak Period End
+      description: >
+        End time for the peak hour filter.
+
+        After this time on weekdays, normal maximum charging amperage is restored.
+      default: "21:00:00"
+      selector:
+        time: {}
+    peak_max_charger_amps:
+      name: Peak Max Charger Amps
+      description: >
+        Maximum charging amperage allowed during peak hours.
+
+        During peak periods on weekdays, the charger will not exceed this amperage even 
+        if more power is available. This reduces grid strain during high-demand periods.
+
+        **Example:** With an 8A peak limit and 18A normal max:
+        - Weekday 17:00-21:00: Maximum 8A charging
+        - All other times: Maximum 18A charging
+      default: 8
+      selector:
+        number:
+          min: 0
+          max: 32
+          unit_of_measurement: A
+    p1_current_l1:
+      name: P1 Current L1 (A)
+      description: >
+        Grid meter current sensor for Phase 1 (L1).
+
+        This sensor reads the real-time current (in Amperes) being drawn from the grid 
+        on phase 1. For HomeWizard P1 meters, this is typically 
+        `sensor.p1_meter_active_current_phase_1`.
+
+        This value is used to calculate available charging capacity on this phase.
+      default: sensor.p1_meter_active_current_phase_1
+      selector:
+        entity:
+          domain: sensor
+          device_class: current
+    p1_current_l2:
+      name: P1 Current L2 (A)
+      description: >
+        Grid meter current sensor for Phase 2 (L2).
+
+        **For 3-phase systems:** This sensor reads the real-time current on phase 2 and 
+        is used in bottleneck calculations.
+
+        **For 1-phase systems:** This input is ignored. You can leave it at the default value.
+      default: sensor.p1_meter_active_current_phase_2
+      selector:
+        entity:
+          domain: sensor
+          device_class: current
+    p1_current_l3:
+      name: P1 Current L3 (A)
+      description: >
+        Grid meter current sensor for Phase 3 (L3).
+
+        **For 3-phase systems:** This sensor reads the real-time current on phase 3 and 
+        is used in bottleneck calculations.
+
+        **For 1-phase systems:** This input is ignored. You can leave it at the default value.
+      default: sensor.p1_meter_active_current_phase_3
+      selector:
+        entity:
+          domain: sensor
+          device_class: current
+    charger_current_l1:
+      name: Charger Real Current L1 (A)
+      description: >
+        Real-time charger current sensor for Phase 1 (L1).
+
+        This sensor reads the actual current the EV charger is drawing on phase 1. This 
+        is used to subtract charger load from grid readings to calculate accurate house load.
+
+        **Why this matters:** Without charger current subtraction, the automation would see 
+        the charger's own draw as part of house load, incorrectly reducing charging capacity.
+
+        For Tuya chargers, this is typically `sensor.ev_charger_current_l1`.
+      default: sensor.ev_charger_current_l1
+      selector:
+        entity:
+          domain: sensor
+          device_class: current
+    charger_current_l2:
+      name: Charger Real Current L2 (A)
+      description: >
+        Real-time charger current sensor for Phase 2 (L2).
+
+        Used to calculate accurate house load on phase 2 by subtracting charger draw 
+        from grid readings.
+
+        **For 1-phase systems:** This input is ignored. You can leave it at the default value.
+      default: sensor.ev_charger_current_l2
+      selector:
+        entity:
+          domain: sensor
+          device_class: current
+    charger_current_l3:
+      name: Charger Real Current L3 (A)
+      description: >
+        Real-time charger current sensor for Phase 3 (L3).
+
+        Used to calculate accurate accurate house load on phase 3 by subtracting charger draw 
+        from grid readings.
+
+        **For 1-phase systems:** This input is ignored. You can leave it at the default value.
+      default: sensor.ev_charger_current_l3
+      selector:
+        entity:
+          domain: sensor
+          device_class: current
+
+triggers:
+- trigger: time_pattern
+  minutes: !input interval
+
+condition:
+- condition: state
+  entity_id: !input sensor_charging_status
+  state:
+    - charging
+    - charged
+    - plugged_in
+    - Charging
+    - CHARGING
+    - Charged
+    - CHARGED
+    - Plugged_In
+    - PLUGGED_IN
+
+action:
+- variables:
+    mains_input: !input mains_type
+    grid_limit: !input max_grid_amps
+    margin_pct: !input safety_margin
+    max_charge: !input max_charger_amps
+    min_charge: !input min_charge_amps
+    
+    peak_enabled: !input peak_filter_enabled
+    peak_start: !input peak_start_time
+    peak_end: !input peak_end_time
+    peak_max: !input peak_max_charger_amps
+    
+    is_weekday: "{{ now().weekday() < 5 }}"
+    is_peak_time: "{{ now() >= today_at(peak_start) and now() < today_at(peak_end) }}"
+    is_peak: "{{ peak_enabled and is_weekday and is_peak_time }}"
+    
+    effective_max: "{{ [max_charge, peak_max] | min if is_peak else max_charge }}"
+    
+    charging_control: !input charging_current_control
+
+    safe_limit: "{{ grid_limit * (1 - (margin_pct / 100)) }}"
+    
+    p1_l1: !input p1_current_l1
+    p1_l2: !input p1_current_l2
+    p1_l3: !input p1_current_l3
+    grid_a_l1: "{{ states(p1_l1) | float(0) }}"
+    grid_a_l2: "{{ states(p1_l2) | float(0) if mains_input == '3-phase' else 0 }}"
+    grid_a_l3: "{{ states(p1_l3) | float(0) if mains_input == '3-phase' else 0 }}"
+    
+    c_l1: !input charger_current_l1
+    c_l2: !input charger_current_l2
+    c_l3: !input charger_current_l3
+    ch_l1: "{{ states(c_l1) | float(0) }}"
+    ch_l2: "{{ states(c_l2) | float(0) }}"
+    ch_l3: "{{ states(c_l3) | float(0) }}"
+    
+    house_l1: "{{ [0, grid_a_l1 - ch_l1] | max }}"
+    house_l2: "{{ [0, grid_a_l2 - ch_l2] | max if mains_input == '3-phase' else 0 }}"
+    house_l3: "{{ [0, grid_a_l3 - ch_l3] | max if mains_input == '3-phase' else 0 }}"
+    
+    head_l1: "{{ safe_limit - house_l1 }}"
+    head_l2: "{{ safe_limit - house_l2 if mains_input == '3-phase' else 999 }}"
+    head_l3: "{{ safe_limit - house_l3 if mains_input == '3-phase' else 999 }}"
+    
+    available_amps: "{{ [head_l1, head_l2, head_l3] | min }}"
+    
+    new_target: >
+      {% if available_amps > effective_max %}
+        {{ effective_max | float }}
+      {% elif available_amps < min_charge %}
+        {{ min_charge | float }}
+      {% else %}
+        {{ available_amps | round(0) }}
+      {% endif %}
+
+- service: select.select_option
+  target:
+    entity_id: !input charger_toggle
+  data:
+    option: "{{ 'Start charging' if available_amps >= min_charge else 'Stop charging' }}"
+
+- repeat:
+    while:
+    - condition: template
+      value_template: >
+        {% set current = states(charging_control) | float(min_charge) %}
+        {{ (current - (new_target | float)) | abs >= 1 }}
+    sequence:
+    - service: number.set_value
+      target:
+        entity_id: !input charging_current_control
+      data:
+        value: >
+          {% set current = states(charging_control) | float(min_charge) %}
+          {% set target = new_target | float %}
+          {% if current < target %}
+            {{ [current + 1, target] | min }}
+          {% elif current > target %}
+            {{ [current - 1, min_charge] | max }}
+          {% else %}
+            {{ target }}
+          {% endif %}
+    - delay: {seconds: 5}
+
+mode: restart
